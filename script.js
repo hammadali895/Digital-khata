@@ -1264,9 +1264,45 @@ function normalizeWhatsAppPhone(phone) {
 }
 
 async function shareReceiptImage(elementId, fileName, phone) {
-    // Share only the receipt image. No WhatsApp text/message is added.
+    // Image-only sharing. Never add a message or text to the WhatsApp URL.
     let whatsappTab = null;
+    let imageUrl = null;
+    let imageDownloaded = false;
+
+    const normalizedPhone = normalizeWhatsAppPhone(phone);
+
+    // Open a tab synchronously during the click so popup blockers are less likely to stop it.
     try { whatsappTab = window.open("about:blank", "_blank"); } catch (_) {}
+
+    function downloadImage(blob) {
+        if (imageDownloaded) return;
+        imageDownloaded = true;
+        imageUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = imageUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => {
+            if (imageUrl) URL.revokeObjectURL(imageUrl);
+        }, 60000);
+    }
+
+    function openCustomerWhatsApp() {
+        if (!normalizedPhone) {
+            if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
+            showToast("Slip image downloaded. Open WhatsApp and attach the PNG image; no text was added.");
+            return;
+        }
+        const waUrl = `https://wa.me/${normalizedPhone}`; // no ?text= parameter
+        if (whatsappTab && !whatsappTab.closed) {
+            whatsappTab.location.href = waUrl;
+        } else {
+            window.open(waUrl, "_blank");
+        }
+        showToast("Slip image downloaded. Attach the PNG in WhatsApp; no message was added.");
+    }
 
     try {
         const element = document.getElementById(elementId);
@@ -1281,43 +1317,33 @@ async function shareReceiptImage(elementId, fileName, phone) {
         });
 
         const blob = await new Promise((resolve, reject) => {
-            canvas.toBlob(result => result ? resolve(result) : reject(new Error("Could not create receipt image.")), "image/png");
+            canvas.toBlob(
+                result => result ? resolve(result) : reject(new Error("Could not create receipt image.")),
+                "image/png"
+            );
         });
 
         const file = new File([blob], fileName, { type: "image/png" });
-        const shareData = { files: [file] }; // intentionally no text or title
 
+        // Native share works only on supported secure origins/devices. If it fails,
+        // fall back instead of silently stopping and leaving WhatsApp unopened.
         if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-            if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
-            await navigator.share(shareData);
-            showToast("Select WhatsApp to share the slip image only.");
-            return;
+            try {
+                if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
+                await navigator.share({ files: [file] }); // image only: no text/title
+                showToast("Choose WhatsApp in the share menu to send the slip image only.");
+                return;
+            } catch (shareError) {
+                // User cancellation is not a technical failure; still provide a usable fallback.
+                console.warn("Image sharing was cancelled or unavailable; using download fallback.", shareError);
+            }
         }
 
-        // Desktop browsers usually cannot attach files directly to WhatsApp Web.
-        // Download the image and open the customer's chat without prefilled text.
-        const url = URL.createObjectURL(blob);
-        const downloadLink = document.createElement("a");
-        downloadLink.href = url;
-        downloadLink.download = fileName;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        downloadLink.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 30000);
-
-        const normalizedPhone = normalizeWhatsAppPhone(phone);
-        if (normalizedPhone) {
-            const waUrl = `https://wa.me/${normalizedPhone}`;
-            if (whatsappTab && !whatsappTab.closed) whatsappTab.location.href = waUrl;
-            else window.open(waUrl, "_blank");
-            showToast("Slip image downloaded. Attach the PNG in WhatsApp; no text is prefilled.");
-        } else {
-            if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
-            showToast("Slip image downloaded. Attach the PNG in WhatsApp.");
-        }
+        downloadImage(blob);
+        openCustomerWhatsApp();
     } catch (error) {
         if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
-        showToast(error.message || "Could not create receipt image.");
+        showToast(error.message || "Could not create receipt image. Check your internet connection and try again.");
     }
 }
 
