@@ -23,6 +23,7 @@ let saleItems = [];
 let currentSlipId = null;
 let currentSaleReceiptId = null;
 let currentKhataCustomerId = null;
+let editingProductId = null;
 
 
 /* ================= BASIC HELPERS ================= */
@@ -1233,53 +1234,107 @@ function openTransactionSlip(id) {
 }
 
 
-function whatsappTransaction(id) {
+/* =========================================================
+   RECEIPT IMAGE + WHATSAPP SHARING
+   Uses html2canvas on demand. File sharing depends on browser/device support.
+========================================================= */
+let html2CanvasLoaderPromise = null;
 
-    const transaction = getTransaction(id);
+function loadHtml2Canvas() {
+    if (typeof window.html2canvas === "function") return Promise.resolve(window.html2canvas);
+    if (html2CanvasLoaderPromise) return html2CanvasLoaderPromise;
 
-    if (!transaction) return;
-
-    const customer =
-        getCustomer(transaction.customerId);
-
-    if (!customer) return;
-
-
-    const message = `Digital Khata
-
-${transaction.type === "lena"
-        ? "LENA SLIP"
-        : "DENA SLIP"}
-
-Slip No: ${transaction.slipNo}
-
-Customer: ${customer.name}
-Phone: ${customer.phone || "-"}
-
-Date: ${formatDate(transaction.date)}
-
-Product / Details:
-${transaction.product || "-"}
-
-Amount:
-${formatMoney(transaction.amount)}
-
-${transaction.note
-    ? `Note: ${transaction.note}`
-    : ""}
-
-Thank you.`;
-
-
-    openWhatsApp(customer.phone, message);
+    html2CanvasLoaderPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+        script.onload = () => typeof window.html2canvas === "function"
+            ? resolve(window.html2canvas)
+            : reject(new Error("Receipt image tool did not load"));
+        script.onerror = () => reject(new Error("Could not load receipt image tool. Check your internet connection."));
+        document.head.appendChild(script);
+    });
+    return html2CanvasLoaderPromise;
 }
 
+function normalizeWhatsAppPhone(phone) {
+    let value = String(phone || "").replace(/\D/g, "");
+    if (value.startsWith("03")) value = "92" + value.slice(1);
+    else if (value.startsWith("3") && value.length === 10) value = "92" + value;
+    return value;
+}
 
-function whatsappCurrentSlip() {
+async function shareReceiptImage(elementId, fileName, phone) {
+    // Share only the receipt image. No WhatsApp text/message is added.
+    let whatsappTab = null;
+    try { whatsappTab = window.open("about:blank", "_blank"); } catch (_) {}
 
-    if (currentSlipId) {
-        whatsappTransaction(currentSlipId);
+    try {
+        const element = document.getElementById(elementId);
+        if (!element) throw new Error("Receipt preview was not found.");
+
+        const html2canvas = await loadHtml2Canvas();
+        const canvas = await html2canvas(element, {
+            backgroundColor: "#ffffff",
+            scale: 2,
+            useCORS: true,
+            logging: false
+        });
+
+        const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(result => result ? resolve(result) : reject(new Error("Could not create receipt image.")), "image/png");
+        });
+
+        const file = new File([blob], fileName, { type: "image/png" });
+        const shareData = { files: [file] }; // intentionally no text or title
+
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+            if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
+            await navigator.share(shareData);
+            showToast("Select WhatsApp to share the slip image only.");
+            return;
+        }
+
+        // Desktop browsers usually cannot attach files directly to WhatsApp Web.
+        // Download the image and open the customer's chat without prefilled text.
+        const url = URL.createObjectURL(blob);
+        const downloadLink = document.createElement("a");
+        downloadLink.href = url;
+        downloadLink.download = fileName;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        downloadLink.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+        const normalizedPhone = normalizeWhatsAppPhone(phone);
+        if (normalizedPhone) {
+            const waUrl = `https://wa.me/${normalizedPhone}`;
+            if (whatsappTab && !whatsappTab.closed) whatsappTab.location.href = waUrl;
+            else window.open(waUrl, "_blank");
+            showToast("Slip image downloaded. Attach the PNG in WhatsApp; no text is prefilled.");
+        } else {
+            if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
+            showToast("Slip image downloaded. Attach the PNG in WhatsApp.");
+        }
+    } catch (error) {
+        if (whatsappTab && !whatsappTab.closed) whatsappTab.close();
+        showToast(error.message || "Could not create receipt image.");
     }
+}
+
+async function whatsappTransaction(id) {
+
+    const transaction = getTransaction(id);
+    if (!transaction) return;
+
+    const customer = getCustomer(transaction.customerId);
+    if (!customer) return;
+
+    openTransactionSlip(id);
+    await shareReceiptImage("receiptContent", `Khata-Slip-${transaction.slipNo || id}.png`, customer.phone);
+}
+
+async function whatsappCurrentSlip() {
+    if (currentSlipId) await whatsappTransaction(currentSlipId);
 }
 
 
@@ -1322,14 +1377,43 @@ function viewTransactionScreenshot(id) {
    PRODUCTS
 ========================================================= */
 
-function openProductModal() {
+function openProductModal(productId = null) {
 
-    document.getElementById("productForm").reset();
+    const form = document.getElementById("productForm");
+    if (!form) return;
 
+    form.reset();
+    editingProductId = productId;
     document.getElementById("minStock").value = 5;
+    document.getElementById("productImagePreview").innerHTML = "";
 
-    document.getElementById("productImagePreview")
-        .innerHTML = "";
+    const title = document.getElementById("productModalTitle");
+    const submitButton = form.querySelector('button[type="submit"]');
+
+    if (productId) {
+        const product = getProduct(productId);
+        if (!product) {
+            showToast("Product not found");
+            return;
+        }
+
+        document.getElementById("productName").value = product.name || "";
+        document.getElementById("productCategory").value = product.category || "";
+        document.getElementById("purchasePrice").value = Number(product.purchasePrice) || 0;
+        document.getElementById("salePrice").value = Number(product.salePrice) || 0;
+        document.getElementById("openingStock").value = Number(product.stock) || 0;
+        document.getElementById("minStock").value = Number(product.minStock ?? 5);
+
+        if (product.image) {
+            document.getElementById("productImagePreview").innerHTML =
+                `<img src="${product.image}" class="preview-image" alt="Product Preview">`;
+        }
+        if (title) title.textContent = "Edit Product";
+        if (submitButton) submitButton.textContent = "Update Product";
+    } else {
+        if (title) title.textContent = "Add Product";
+        if (submitButton) submitButton.textContent = "Save Product";
+    }
 
     openModal("productModal");
 }
@@ -1401,47 +1485,34 @@ document.getElementById("productForm")
         }
 
 
+        const existingProduct = editingProductId
+            ? getProduct(editingProductId)
+            : null;
+
         const product = {
-
-            id: generateId("PRO"),
-
-            name:
-                document.getElementById("productName")
-                    .value.trim(),
-
-            category:
-                document.getElementById("productCategory")
-                    .value.trim(),
-
-            purchasePrice:
-                Number(document.getElementById("purchasePrice").value) || 0,
-
-            salePrice:
-                Number(document.getElementById("salePrice").value) || 0,
-
-            stock:
-                Number(document.getElementById("openingStock").value) || 0,
-
-            minStock:
-                Number(document.getElementById("minStock").value) || 5,
-
-            image,
-
-            createdAt:
-                new Date().toISOString()
-
+            id: existingProduct ? existingProduct.id : generateId("PRO"),
+            name: document.getElementById("productName").value.trim(),
+            category: document.getElementById("productCategory").value.trim(),
+            purchasePrice: Number(document.getElementById("purchasePrice").value) || 0,
+            salePrice: Number(document.getElementById("salePrice").value) || 0,
+            stock: Number(document.getElementById("openingStock").value) || 0,
+            minStock: Number(document.getElementById("minStock").value) || 5,
+            image: image || existingProduct?.image || "",
+            createdAt: existingProduct?.createdAt || new Date().toISOString(),
+            updatedAt: existingProduct ? new Date().toISOString() : undefined
         };
 
-
-        products.push(product);
+        if (existingProduct) {
+            products = products.map(item => item.id === existingProduct.id ? product : item);
+        } else {
+            products.push(product);
+        }
 
         saveData(STORAGE.products, products);
-
+        editingProductId = null;
         closeModal("productModal");
-
         refreshAll();
-
-        showToast("Product added successfully");
+        showToast(existingProduct ? "Product updated successfully" : "Product added successfully");
     });
 
 
@@ -1557,6 +1628,12 @@ function renderProducts() {
                 <td>
 
                     <div class="action-buttons">
+
+                        <button class="icon-btn green"
+                                title="Edit Product"
+                                onclick="openProductModal('${product.id}')">
+                            <i class="fa-solid fa-pen-to-square"></i>
+                        </button>
 
                         <button class="icon-btn blue"
                                 title="Stock"
@@ -2360,58 +2437,23 @@ function openSaleReceipt(id) {
 }
 
 
-function whatsappSale(id) {
+async function whatsappSale(id) {
 
     const sale = getSale(id);
-
     if (!sale) return;
 
-    const customer =
-        sale.customerId
-            ? getCustomer(sale.customerId)
-            : null;
-
-
+    const customer = sale.customerId ? getCustomer(sale.customerId) : null;
     if (!customer) {
         showToast("Customer phone is required");
         return;
     }
 
-
-    const productLines =
-        sale.items.map(item =>
-            `- ${item.productName} x ${item.quantity} = ${formatMoney(item.total)}`
-        ).join("\n");
-
-
-    const message = `Digital Khata
-
-SALE INVOICE
-
-Invoice: ${sale.invoice}
-
-Customer: ${customer.name}
-
-Products:
-${productLines}
-
-Total: ${formatMoney(sale.total)}
-Paid: ${formatMoney(sale.paid)}
-Remaining: ${formatMoney(sale.remaining)}
-
-Date: ${formatDate(sale.date)}
-
-Thank you.`;
-
-    openWhatsApp(customer.phone, message);
+    openSaleReceipt(id);
+    await shareReceiptImage("saleReceiptContent", `Sale-Receipt-${sale.invoice || id}.png`, customer.phone);
 }
 
-
-function whatsappCurrentSaleReceipt() {
-
-    if (currentSaleReceiptId) {
-        whatsappSale(currentSaleReceiptId);
-    }
+async function whatsappCurrentSaleReceipt() {
+    if (currentSaleReceiptId) await whatsappSale(currentSaleReceiptId);
 }
 
 
@@ -2432,135 +2474,139 @@ function printCurrentSaleReceipt() {
 
 function printHTML(content, title) {
 
-    const printWindow =
-        window.open("", "_blank", "width=800,height=900");
+    const printWindow = window.open("", "_blank", "width=800,height=900");
 
     if (!printWindow) {
-
         showToast("Please allow popups for printing");
         return;
     }
 
-
+    printWindow.document.open();
     printWindow.document.write(`
-
         <!DOCTYPE html>
-
-        <html>
-
+        <html lang="en">
         <head>
-
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>${escapeHTML(title)}</title>
-
             <style>
-
-                * {
-                    box-sizing:border-box;
+                * { box-sizing: border-box; }
+                @page {
+                    size: 80mm auto;
+                    margin: 3mm;
                 }
-
-                body {
-                    font-family:Arial,Helvetica,sans-serif;
-                    margin:0;
-                    padding:25px;
-                    color:#334155;
+                html, body {
+                    width: 74mm;
+                    margin: 0;
+                    padding: 0;
+                    background: #fff !important;
+                    color: #000 !important;
+                    font-family: Arial, Helvetica, sans-serif;
+                    font-size: 12px;
+                    font-weight: 600;
+                    line-height: 1.35;
+                    -webkit-print-color-adjust: exact;
+                    print-color-adjust: exact;
                 }
-
                 .receipt {
-                    max-width:700px;
-                    margin:auto;
+                    width: 100% !important;
+                    max-width: none !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    color: #000 !important;
+                    background: #fff !important;
+                    box-shadow: none !important;
                 }
-
                 .receipt-business {
-                    text-align:center;
-                    border-bottom:2px dashed #cbd5e1;
-                    padding-bottom:18px;
-                    margin-bottom:18px;
+                    text-align: center;
+                    border-bottom: 1px dashed #000;
+                    padding: 0 0 8px;
+                    margin: 0 0 8px;
                 }
-
                 .receipt-business h2 {
-                    color:#0f172a;
+                    color: #000 !important;
+                    font-size: 18px;
+                    font-weight: 800;
+                    margin: 0 0 3px;
                 }
-
                 .receipt-business p {
-                    color:#64748b;
-                    font-size:12px;
+                    color: #000 !important;
+                    font-size: 11px;
+                    font-weight: 600;
+                    margin: 2px 0;
                 }
-
                 .receipt-info {
-                    display:grid;
-                    grid-template-columns:1fr 1fr;
-                    gap:8px 20px;
-                    margin-bottom:18px;
+                    display: block !important;
+                    margin: 0 0 8px;
                 }
-
                 .receipt-info div {
-                    font-size:12px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    margin: 3px 0;
+                    overflow-wrap: anywhere;
                 }
-
-                table {
-                    width:100%;
-                    border-collapse:collapse;
-                    margin-bottom:20px;
+                .receipt-info strong { color: #000 !important; }
+                table, .receipt-table {
+                    width: 100% !important;
+                    min-width: 0 !important;
+                    border-collapse: collapse;
+                    margin: 6px 0 9px;
+                    table-layout: auto;
                 }
-
-                th,
-                td {
-                    border-bottom:1px solid #e2e8f0;
-                    padding:9px;
-                    text-align:left;
-                    font-size:12px;
+                th, td, .receipt-table th, .receipt-table td {
+                    color: #000 !important;
+                    background: #fff !important;
+                    border-bottom: 1px solid #555;
+                    padding: 5px 2px !important;
+                    text-align: left;
+                    vertical-align: top;
+                    font-size: 10.5px !important;
+                    font-weight: 600 !important;
+                    overflow-wrap: anywhere;
                 }
-
-                th {
-                    background:#f8fafc;
-                }
-
+                th { font-weight: 800 !important; border-bottom: 1.5px solid #000; }
                 .receipt-total {
-                    width:300px;
-                    margin-left:auto;
-                    border-top:2px solid #0f172a;
+                    width: 100% !important;
+                    margin: 8px 0 0 auto !important;
+                    border-top: 1.5px solid #000;
                 }
-
                 .receipt-total div {
-                    display:flex;
-                    justify-content:space-between;
-                    padding:7px 0;
-                    font-size:13px;
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 8px;
+                    padding: 4px 0;
+                    color: #000 !important;
+                    font-size: 11px !important;
+                    font-weight: 700;
                 }
-
                 .receipt-total .grand {
-                    border-top:1px solid #cbd5e1;
-                    font-size:16px;
-                    font-weight:bold;
+                    border-top: 1px solid #000;
+                    font-size: 13px !important;
+                    font-weight: 800 !important;
                 }
-
-                img {
-                    max-width:220px;
-                    max-height:220px;
+                .receipt-note, .receipt-note *, .receipt p, .receipt span {
+                    color: #000 !important;
                 }
-
+                img { max-width: 35mm; max-height: 35mm; }
+                button, .receipt-buttons, .no-print { display: none !important; }
+                * { text-shadow: none !important; }
             </style>
-
         </head>
-
         <body>
-
             ${content}
-
             <script>
-                window.onload = function() {
-                    window.print();
+                window.onload = function () {
+                    setTimeout(function () {
+                        window.focus();
+                        window.print();
+                    }, 250);
                 };
             <\/script>
-
         </body>
-
         </html>
     `);
-
     printWindow.document.close();
 }
-
 
 /* =========================================================
    DASHBOARD
