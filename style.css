@@ -1146,3 +1146,98 @@ form {
         border: 0;
     }
 }
+/* =====================================================
+   DIGITAL KHATA - PRODUCT EDIT + RECEIPT SHARE ADDITIONS
+   Append-only styling; keeps the existing theme intact.
+===================================================== */
+.action-buttons {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.icon-btn.green {
+    color: var(--green);
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+}
+
+.icon-btn.green:hover {
+    color: #fff;
+    border-color: var(--green);
+    background: var(--green);
+}
+
+.icon-btn:focus-visible {
+    outline: 3px solid rgba(37, 99, 235, .25);
+    outline-offset: 2px;
+}
+
+#productImagePreview img,
+.preview-image {
+    display: block;
+    max-width: 180px;
+    max-height: 180px;
+    object-fit: contain;
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #fff;
+    padding: 5px;
+}
+
+@media (max-width: 640px) {
+    .action-buttons { gap: 4px; }
+    .icon-btn { min-width: 34px; min-height: 34px; }
+}
+
+
+/* ================= 80MM THERMAL RECEIPT PRINT QUALITY FIX ================= */
+@media print {
+    @page { size: 80mm auto; margin: 3mm; }
+    html, body { background: #fff !important; color: #000 !important; }
+    #receiptContent, #saleReceiptContent,
+    #receiptContent *, #saleReceiptContent * {
+        color: #000 !important;
+        text-shadow: none !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    #receiptContent, #saleReceiptContent {
+        width: 74mm !important;
+        max-width: 74mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+    }
+    #receiptContent .receipt, #saleReceiptContent .receipt {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        box-shadow: none !important;
+        background: #fff !important;
+        color: #000 !important;
+        font-weight: 600 !important;
+    }
+    #receiptContent .receipt-business h2,
+    #saleReceiptContent .receipt-business h2 { color: #000 !important; font-weight: 800 !important; }
+    #receiptContent .receipt-info,
+    #saleReceiptContent .receipt-info { grid-template-columns: 1fr !important; }
+    #receiptContent .receipt-info div,
+    #saleReceiptContent .receipt-info div { color: #000 !important; font-size: 11px !important; font-weight: 600 !important; }
+    #receiptContent .receipt-table,
+    #saleReceiptContent .receipt-table { width: 100% !important; min-width: 0 !important; }
+    #receiptContent .receipt-table th, #receiptContent .receipt-table td,
+    #saleReceiptContent .receipt-table th, #saleReceiptContent .receipt-table td {
+        background: #fff !important; color: #000 !important; font-size: 10.5px !important;
+        font-weight: 700 !important; padding: 4px 2px !important; border-color: #333 !important;
+    }
+    #receiptContent .receipt-total, #saleReceiptContent .receipt-total { width: 100% !important; }
+    #receiptContent .receipt-total div, #saleReceiptContent .receipt-total div {
+        color: #000 !important; font-size: 11px !important; font-weight: 700 !important;
+    }
+    .receipt-buttons, .no-print { display: none !important; }
+}
